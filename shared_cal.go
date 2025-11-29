@@ -2,9 +2,9 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	ics "github.com/arran4/golang-ical"
 )
@@ -14,28 +14,75 @@ type CalendarToCopy struct {
 	Name string `json:"name"` // Name is added all event titles. To ignore use ""
 }
 
+type TrackedEvent struct {
+	Event        *ics.VEvent
+	LastModified *time.Time
+}
+
 func main() {
 	calendarsToCopy, _ := getCalendarFromJson("calendars.json")
 	sharedCal := ics.NewCalendar()
 	sharedCal.SetMethod(ics.MethodPublish)
 	sharedCal.SetName("Combined Calendar")
 
-	for _, calendar := range calendarsToCopy {
-		fmt.Println(calendar.Name)
-		for _, event := range getCalendar(calendar.Url).Events() {
-			copyEvent(event, sharedCal, calendar.Name)
+	uidLastModtifiedMap := make(map[string]TrackedEvent)
+
+	syncCalendars(uidLastModtifiedMap, calendarsToCopy, sharedCal)
+	sharedCalString := sharedCal.Serialize()
+	println(sharedCalString)
+}
+
+func syncCalendars(cacheMap map[string]TrackedEvent, calendarsToSync []CalendarToCopy, sharedCal *ics.Calendar) {
+	toDeleteMap := make(map[string]bool)
+
+	for uid := range cacheMap {
+		toDeleteMap[uid] = true
+	}
+
+	for _, calendar := range calendarsToSync {
+		ical := getCalendar(calendar.Url)
+		for _, event := range ical.Events() {
+			trackedEvent, exist := cacheMap[event.GetProperty(ics.ComponentPropertyUniqueId).Value]
+			eventUid := event.GetProperty(ics.ComponentPropertyUniqueId).Value
+
+			// New Event
+			if !exist {
+				createEventFromSourceEvent(sharedCal, event, calendar.Name, cacheMap)
+				delete(toDeleteMap, eventUid)
+				continue
+			}
+
+			lastModified := event.GetProperty(ics.ComponentPropertyLastModified)
+
+			// Event have no last modified value. Therefore, an update is required to ensure accuracy
+			if lastModified == nil {
+				setEventValues(trackedEvent.Event, event, calendar.Name, cacheMap)
+				delete(toDeleteMap, eventUid)
+				continue
+			}
+
+			// If there is no tracked modified time update event
+			if trackedEvent.LastModified == nil {
+				setEventValues(trackedEvent.Event, event, calendar.Name, cacheMap)
+				delete(toDeleteMap, eventUid)
+				continue
+			}
+
+			lastModifiedTime, _ := time.Parse(lastModified.Value, lastModified.Value)
+			trackedTime := *trackedEvent.LastModified
+			// If the two tracked times are not the same update event
+			if trackedTime.Compare(lastModifiedTime) != 0 {
+				setEventValues(trackedEvent.Event, event, calendar.Name, cacheMap)
+				delete(toDeleteMap, eventUid)
+				continue
+			}
 		}
 	}
 
-	// for _, event := range sharedCal.Events() {
-	// 	title := event.GetProperty(ics.ComponentPropertySummary).Value
-	// 	start, _ := event.GetStartAt()
-	// 	end, _ := event.GetEndAt()
-	// 	fmt.Println(title, start, end)
-	// }
-
-	sharedCalString := sharedCal.Serialize()
-	println(sharedCalString)
+	// Remove events that do not exists any more
+	for uid := range toDeleteMap {
+		sharedCal.RemoveEvent(uid)
+	}
 }
 
 func getCalendarFromJson(path string) ([]CalendarToCopy, error) {
@@ -58,39 +105,51 @@ func getCalendar(url string) *ics.Calendar {
 	return cal
 }
 
-func copyEvent(srcEvent *ics.VEvent, dstCal *ics.Calendar, calendarName string) *ics.VEvent {
+func createEventFromSourceEvent(dstCal *ics.Calendar, srcEvent *ics.VEvent, calendarName string, cacheMap map[string]TrackedEvent) {
 	// Create new event in dest cal
 	newEvent := dstCal.AddEvent(srcEvent.GetProperty(ics.ComponentPropertyUniqueId).Value)
+	setEventValues(newEvent, srcEvent, calendarName, cacheMap)
+}
 
+func setEventValues(event *ics.VEvent, srcEvent *ics.VEvent, calendarName string, cacheMap map[string]TrackedEvent) {
 	if summery := srcEvent.GetProperty(ics.ComponentPropertySummary); summery != nil {
-		newEvent.SetSummary(summery.Value + " - " + calendarName)
+		event.SetSummary(summery.Value + " - " + calendarName)
 	}
 
 	if description := srcEvent.GetProperty(ics.ComponentPropertyDescription); description != nil {
-		newEvent.SetDescription(description.Value)
+		event.SetDescription(description.Value)
 	}
 
 	if location := srcEvent.GetProperty(ics.ComponentPropertyLocation); location != nil {
-		newEvent.SetLocation(location.Value)
+		event.SetLocation(location.Value)
 	}
 
 	if rRule := srcEvent.GetProperty(ics.ComponentPropertyRrule); rRule != nil {
-		newEvent.SetProperty(ics.ComponentPropertyRrule, rRule.Value)
+		event.SetProperty(ics.ComponentPropertyRrule, rRule.Value)
 	}
 
 	for _, ex := range srcEvent.GetProperties(ics.ComponentPropertyExdate) {
-		newEvent.SetProperty(ics.ComponentPropertyExdate, ex.Value)
+		event.SetProperty(ics.ComponentPropertyExdate, ex.Value)
 	}
 
 	for _, r := range srcEvent.GetProperties(ics.ComponentPropertyRdate) {
-		newEvent.SetProperty(ics.ComponentPropertyRdate, r.Value)
+		event.SetProperty(ics.ComponentPropertyRdate, r.Value)
+	}
+
+	lastModified := srcEvent.GetProperty(ics.ComponentPropertyLastModified)
+	var modTime time.Time
+	if lastModified != nil {
+		time, _ := time.Parse(lastModified.Value, lastModified.Value)
+		modTime = time
+		event.SetLastModifiedAt(time)
 	}
 
 	start, _ := srcEvent.GetStartAt()
-	newEvent.SetStartAt(start)
+	event.SetStartAt(start)
 
 	end, _ := srcEvent.GetEndAt()
-	newEvent.SetEndAt(end)
+	event.SetEndAt(end)
 
-	return newEvent
+	uid := event.GetProperty(ics.ComponentPropertyUniqueId)
+	cacheMap[uid.Value] = TrackedEvent{Event: event, LastModified: &modTime}
 }
