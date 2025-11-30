@@ -19,8 +19,11 @@ type TrackedEvent struct {
 	LastModified *time.Time
 }
 
-func main() {
-	calendarsToCopy, _ := getCalendarFromJson("calendars.json")
+func getIcal() (string, error) {
+	calendarsToCopy, err := getCalendarFromJson("calendars.json")
+	if err != nil {
+		return "", err
+	}
 	sharedCal := ics.NewCalendar()
 	sharedCal.SetMethod(ics.MethodPublish)
 	sharedCal.SetName("Combined Calendar")
@@ -29,7 +32,7 @@ func main() {
 
 	syncCalendars(uidLastModtifiedMap, calendarsToCopy, sharedCal)
 	sharedCalString := sharedCal.Serialize()
-	println(sharedCalString)
+	return sharedCalString, nil
 }
 
 func syncCalendars(cacheMap map[string]TrackedEvent, calendarsToSync []CalendarToCopy, sharedCal *ics.Calendar) {
@@ -68,7 +71,10 @@ func syncCalendars(cacheMap map[string]TrackedEvent, calendarsToSync []CalendarT
 				continue
 			}
 
-			lastModifiedTime, _ := time.Parse(lastModified.Value, lastModified.Value)
+			lastModifiedTime, err := time.Parse(lastModified.Value, lastModified.Value)
+			if err != nil {
+				lastModifiedTime, _ = time.Parse("20060102T150405", "20060102T150405")
+			}
 			trackedTime := *trackedEvent.LastModified
 			// If the two tracked times are not the same update event
 			if trackedTime.Compare(lastModifiedTime) != 0 {
