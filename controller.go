@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"log"
 	"net/http"
@@ -19,8 +20,18 @@ func serveIcs(ics *SafeIcs) http.HandlerFunc {
 		value := ics.Value
 		ics.RUnlock()
 
+		etag := fmt.Sprintf(`"%x"`, sha256.Sum256([]byte(value)))
+
+		if match := r.Header.Get("If-None-Match"); match == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+
 		w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
 		w.Header().Set("Cache-Control", "public, max-age=300")
+		w.Header().Set("ETag", etag)
+
+		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, value)
 	}
 }
