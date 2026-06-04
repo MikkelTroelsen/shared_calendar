@@ -150,11 +150,33 @@ func setEventValues(event *ics.VEvent, srcEvent *ics.VEvent, calendarName string
 		event.SetLastModifiedAt(time)
 	}
 
-	start, _ := srcEvent.GetStartAt()
-	event.SetStartAt(start)
+	dtStart := srcEvent.GetProperty(ics.ComponentPropertyDtStart)
+	dtEnd := srcEvent.GetProperty(ics.ComponentPropertyDtEnd)
 
-	end, _ := srcEvent.GetEndAt()
-	event.SetEndAt(end)
+	if dtStart != nil {
+		isAllDay := len(dtStart.Value) == 8 // DATE format: "20060102"
+		if isAllDay {
+			// Preserve as DATE property, not DATETIME
+			event.SetProperty(ics.ComponentPropertyDtStart, dtStart.Value)
+		} else {
+			start, err := srcEvent.GetStartAt()
+			if err == nil {
+				event.SetStartAt(start)
+			}
+		}
+	}
+
+	if dtEnd != nil {
+		isAllDay := len(dtEnd.Value) == 8
+		if isAllDay {
+			event.SetProperty(ics.ComponentPropertyDtEnd, dtEnd.Value)
+		} else {
+			end, err := srcEvent.GetEndAt()
+			if err == nil {
+				event.SetEndAt(end)
+			}
+		}
+	}
 
 	uid := event.GetProperty(ics.ComponentPropertyUniqueId)
 	cacheMap[uid.Value] = TrackedEvent{Event: event, LastModified: &modTime}
